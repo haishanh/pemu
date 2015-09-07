@@ -13,8 +13,9 @@ QEMU_OPTIONS = { 'qemu'  : 'qemu-system-x86_64',
                  'img'   : '/home/haishanh/images/arch-copy.qcow2',
                  'memory': '2G',
                  'cpu'   : 'host',
-                 'smp'   : 'cores=2,threads=1,sockets=1', 
-                 'nic_nb': '1' } 
+                 'smp'   : 'cores=2,threads=1,sockets=1',
+                 'nic_nb': '1' }
+LOG = logging.getLogger('pemu')
 
 def sh(c, check=False):
     p = subprocess.Popen(c, shell=True, stdout=subprocess.PIPE,
@@ -29,9 +30,9 @@ def mac_hash(s):
     """
     m = hashlib.md5()
     m.update(s)
-    m = m.hexdigest()[0:8] 
+    m = m.hexdigest()[0:8]
     return "52:54:%s%s:%s%s:%s%s:%s%s" % tuple(m)
-    
+
 
 def gen_virtio_dev(s, id):
     """
@@ -70,7 +71,7 @@ def cfg_get(callback, option, section='global'):
     """
     defensive `get` method of ConfigParser class
     callback should be one of [ 'get', 'getboolean', 'getfloat', 'getint' ]
-    Usage: 
+    Usage:
         cfg = ConfigParser.ConfigParser()
         cfg.read(cf)
         x = cfg_get(cfg.getint, 'vm_nb', 'global')
@@ -107,9 +108,9 @@ def cfg_init_individual(cfg, confd, vm):
     d.update(confd['global'])
     for (opt, val) in cfg.items(vm):
         if opt not in QEMU_OPTIONS:
-            logging.warning('Invalid parameter: {0}'.format(opt))
+            LOG.warning('Invalid parameter: {0}'.format(opt))
         else:
-            d[opt] = val 
+            d[opt] = val
 
 def cfg_init_env(cfg, confd):
     """
@@ -198,7 +199,7 @@ def test():
     cfgs = cfg_parser()
     for cfg in cfgs:
         if cfg in ('env', 'global'): continue
-        vm = VM(cfg, cfgs[cfg]) 
+        vm = VM(cfg, cfgs[cfg])
         vm.run()
 
 if __name__ == '__main__':

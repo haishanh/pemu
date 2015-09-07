@@ -1,3 +1,3 @@
 ## pemu
 
-`pemu` is QEMU/KVM command line wrapper
+`pemu` is a QEMU/KVM command line wrapper
