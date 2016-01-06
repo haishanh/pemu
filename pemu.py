@@ -3,18 +3,26 @@
 qemu helper
 haishanh
 """
+import re
+import os
+import sys
 import hashlib
 import logging
+import argparse
 import subprocess
 import ConfigParser
 
-dry_run = True
-QEMU_OPTIONS = { 'qemu'  : 'qemu-system-x86_64',
-                 'img'   : '/home/haishanh/images/arch-copy.qcow2',
-                 'memory': '2G',
-                 'cpu'   : 'host',
-                 'smp'   : 'cores=2,threads=1,sockets=1',
-                 'nic_nb': '1' }
+
+QEMU_GLOBAL_OPTIONS = ['qemu', 'image', 'memory', 'cpu', 'nic_nb', 'base_vnc_port']
+
+QEMU_DEFAULT_CONFG = { 'qemu'  : 'qemu-system-x86_64',
+                       'image'   : '/home/haishanh/images/arch-copy.qcow2',
+                       'memory': '2G',
+                       'cpu'   : 'host',
+                       'smp'   : 'cores=2,threads=1,sockets=1',
+                       'nic_nb': '1',
+                       'vnc_port': '10' }
+
 LOG = logging.getLogger('pemu')
 
 def sh(c, check=False):
@@ -22,7 +30,9 @@ def sh(c, check=False):
                          stderr=subprocess.PIPE)
     print(p.pid)
     if check:
-        return p.wait()
+        p.wait()
+        return p.stdout
+
 
 def mac_hash(s):
     """
@@ -44,27 +54,6 @@ def gen_virtio_dev(s, id):
     dev = '-device virtio-net-pci,netdev=hostnet'+ \
           str(id) +',mac=' + mac
     return netdev + ' ' + dev
-
-
-def start_vm():
-    """
-    start a VM
-    """
-    img = '/home/haishanh/images/arch-copy.qcow2'
-    base_vnc_port = 35
-    smp = 'cores=2,threads=1,sockets=1'
-    virtio_dev = gen_virtio_dev(img, 0)
-    # here comes the command
-    cmd = 'numactl --cpunodebind=0 --membind=0'
-    cmd += ' qemu-system-x86_64 --enable-kvm -nographic -m 3G'
-    cmd += ' -cpu host'
-    cmd += ' -smp ' + smp
-    cmd += ' -hda ' + img
-    cmd += ' ' + virtio_dev
-    cmd += ' -vnc :' + str(base_vnc_port)
-    print(cmd)
-    sh(cmd)
-
 
 
 def cfg_get(callback, option, section='global'):
@@ -90,11 +79,13 @@ def cfg_init_global(cfg, confd):
     # changes made to `d` affect `confd` as well
     confd['global'] = d
     # update `d` with *default* qemu options
-    d.update(QEMU_OPTIONS)
+    # d.update(QEMU_OPTIONS)
     # overwrite
-    for option in d.keys():
+    for option in QEMU_GLOBAL_OPTIONS:
         x = cfg_get(cfg.get, option, 'global')
-        if x: d[option] = x
+        if x:
+            d[option] = x
+
 
 def cfg_init_individual(cfg, confd, vm):
     """
@@ -103,14 +94,21 @@ def cfg_init_individual(cfg, confd, vm):
     """
     if vm in ('env', 'global'):
         return
+    vnc_port_set = False
     d = {}
     confd[vm] = d
+    for key in QEMU_DEFAULT_CONFG.keys():
+        d[key] = QEMU_DEFAULT_CONFG[key]
     d.update(confd['global'])
     for (opt, val) in cfg.items(vm):
-        if opt not in QEMU_OPTIONS:
+        if opt not in QEMU_DEFAULT_CONFG.keys():
             LOG.warning('Invalid parameter: {0}'.format(opt))
         else:
             d[opt] = val
+            if opt == 'vnc_port':
+                vnc_port_set = True
+    if not vnc_port_set and 'base_vnc_port' in confd['global']:
+        d['vnc_port'] = ''
 
 def cfg_init_env(cfg, confd):
     """
@@ -125,17 +123,27 @@ def cfg_init_env(cfg, confd):
         x = cfg_get(cfg.get, option, 'env')
         if x: d[option] = x
 
+
 def populate_conf(confd):
     """
     populate configurations
     """
     # TODO consider do validation also in this function
-    base_vnc_port = 40
+    if 'base_vnc_port' in confd['global']:
+        base_vnc_port = int(confd['global']['base_vnc_port'])
+    else:
+        base_vnc_port = 10
     vnc_port = base_vnc_port
+    # it's not good
+    images_used = []
     for sec in confd:
         if sec in ('env', 'global'): continue
         conf = confd[sec]
         nic_nb = int(conf['nic_nb'])
+        if conf['image'] in images_used:
+            print('CRITICAL: Same image used for multiple VMs')
+            sys.exit(1)
+        images_used.append(conf['image'])
         conf['nic'] = []
         for i in range(nic_nb):
             # netdev = 'tap,id=hostnet' + str(i) + \
@@ -143,18 +151,19 @@ def populate_conf(confd):
             # device = 'virtio-net-pci,netdev=hostnet' + str(i) + \
             #          ',mac=' + mac_hash(conf['img'], i)
             # conf['nic'].append((netdev, device))
-            nic = gen_virtio_dev(conf['img'], i)
+            nic = gen_virtio_dev(conf['image'], i)
             conf['nic'].append(nic)
-        conf['vnc_port'] = str(vnc_port)
-        vnc_port += 1
+        if not conf['vnc_port']:
+            conf['vnc_port'] = str(vnc_port)
+            vnc_port += 1
 
-def cfg_parser():
+def cfg_parser(cf):
     """
     parsing the config file
     """
-    # TODO try more dirs
-    dir = './'
-    cf = dir + 'vm.cfg'
+    if not os.path.isfile(cf):
+        print('ERROR: config file {0} not found'.format(cf))
+        sys.exit(-1)
     # TODO add defence here
     cfg = ConfigParser.ConfigParser()
     cfg.read(cf)
@@ -169,6 +178,31 @@ def cfg_parser():
     return confd
 
 
+class QemuArgs(object):
+    def __init__(self, name, conf):
+        self.name = name
+        if not 'enable-kvm' in conf:
+            conf['enable-kvm'] = True
+        if not 'nographic' in conf:
+            conf['nographic'] = True
+        self.conf = conf
+
+
+    def gen_args(self):
+        spre = re.compile(r'\s(?=--?[a-z][\w]*)')
+        conf = self.conf
+        qemu_cmd = conf['qemu']
+        if conf['enable-kvm']:
+            qemu_cmd += ' --enable-kvm'
+        if conf['nographic']:
+            qemu_cmd += ' -nographic'
+        qemu_cmd += ' -m ' + conf['memory'] + ' -cpu ' + conf['cpu'] + \
+                    ' -smp ' + conf['smp'] + ' -hda ' +  conf['image'] + \
+                    ' ' + ' '.join(conf['nic']) + ' -vnc :' + conf['vnc_port']
+        _ = spre.split(qemu_cmd)
+        beautiful_cmd = ' \\\n'.join(_)
+        return qemu_cmd, beautiful_cmd
+
 class VM(object):
     """
     modelling a QEMU/KVM virtual machine
@@ -178,30 +212,42 @@ class VM(object):
         name is a string
         conf is the config for this specific VM
         """
-        self.conf = conf
         self.name = name
+        self.conf = conf
 
-    def run(self):
+    def run(self, dry_run):
         """
         bring the VM up
         """
-        conf = self.conf
-        qemu_cmd = conf['qemu'] + ' --enable-kvm' + ' -nographic' + \
-                   ' -m ' + conf['memory'] + ' -cpu ' + conf['cpu'] + \
-                   ' -smp ' + conf['smp'] + ' -hda ' +  conf['img'] + \
-                   ' ' + ' '.join(conf['nic']) + ' -vnc :' + conf['vnc_port']
+        qemu_args = QemuArgs(self.name, self.conf)
+        qemu_cmd, beautiful_cmd = qemu_args.gen_args();
+        # conf = self.conf
+        # qemu_cmd = conf['qemu'] + ' --enable-kvm' + ' -nographic' + \
+        #            ' -m ' + conf['memory'] + ' -cpu ' + conf['cpu'] + \
+        #            ' -smp ' + conf['smp'] + ' -hda ' +  conf['image'] + \
+        #            ' ' + ' '.join(conf['nic']) + ' -vnc :' + conf['vnc_port']
         if dry_run:
-            print(qemu_cmd)
+            print(beautiful_cmd)
+            print('\n')
         else:
-            pass
+            sh(qemu_cmd)
 
-def test():
-    cfgs = cfg_parser()
+def parse_arguments():
+    """
+    Parse sys.argv, return as a dict
+    """
+    parser = argparse.ArgumentParser(description="Qemu wrapper")
+    parser.add_argument('-d', '--dry-run', dest='dry_run', action='store_true', default = False, help='Dry run')
+    parser.add_argument('-f', '--config-file', dest='config_file', default='vm.ini', help='Specify config file')
+    return vars(parser.parse_args())
+
+def test(args):
+    cfgs = cfg_parser(args['config_file'])
     for cfg in cfgs:
         if cfg in ('env', 'global'): continue
         vm = VM(cfg, cfgs[cfg])
-        vm.run()
+        vm.run(args['dry_run'])
 
 if __name__ == '__main__':
-    # start_vm()
-    test()
+    args = parse_arguments()
+    test(args)
