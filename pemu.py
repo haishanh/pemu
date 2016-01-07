@@ -7,23 +7,26 @@ import re
 import os
 import sys
 import hashlib
-import logging
 import argparse
 import subprocess
 import ConfigParser
 
 
-QEMU_GLOBAL_OPTIONS = ['qemu', 'image', 'memory', 'cpu', 'nic_nb', 'base_vnc_port']
+DEFAULT_VALUES = {
+     'qemu'    : 'qemu-system-x86_64',
+     'image'   : '',
+     'memory'  : '2G',
+     'cpu'     : 'host',
+     'smp'     : 'cores=2,threads=1,sockets=1',
+     'nic_nb'  : '1',
+     'vnc_port': '',
+     'extra'   : ''
+}
 
-QEMU_DEFAULT_CONFG = { 'qemu'  : 'qemu-system-x86_64',
-                       'image'   : '/home/haishanh/images/arch-copy.qcow2',
-                       'memory': '2G',
-                       'cpu'   : 'host',
-                       'smp'   : 'cores=2,threads=1,sockets=1',
-                       'nic_nb': '1',
-                       'vnc_port': '10' }
+ENV_OPTIONS = ['vm_nb']
+GLOBAL_OPTIONS = ['base_vnc_port', 'qemu', 'image',
+                  'memory', 'cpu', 'smp', 'nic_nb', 'extra']
 
-LOG = logging.getLogger('pemu')
 
 def sh(c, check=False):
     p = subprocess.Popen(c, shell=True, stdout=subprocess.PIPE,
@@ -47,6 +50,8 @@ def mac_hash(s):
 def gen_virtio_dev(s, id):
     """
     generate `-netdev` and `-dev` args for qemu
+    @param {string} s - a string to hash
+    @param {number} id
     """
     mac = mac_hash(s + str(id))
     netdev = '-netdev tap,id=hostnet' + str(id) + \
@@ -102,7 +107,7 @@ def cfg_init_individual(cfg, confd, vm):
     d.update(confd['global'])
     for (opt, val) in cfg.items(vm):
         if opt not in QEMU_DEFAULT_CONFG.keys():
-            LOG.warning('Invalid parameter: {0}'.format(opt))
+            print('WARN: Invalid parameter: {0}'.format(opt))
         else:
             d[opt] = val
             if opt == 'vnc_port':
@@ -112,7 +117,7 @@ def cfg_init_individual(cfg, confd, vm):
 
 def cfg_init_env(cfg, confd):
     """
-    polulate confd['env']
+    populate confd['env']
     cfg is a ConfigParser.ConfigParser() instance
     """
     d = {}
@@ -164,10 +169,10 @@ def cfg_parser(cf):
     if not os.path.isfile(cf):
         print('ERROR: config file {0} not found'.format(cf))
         sys.exit(-1)
-    # TODO add defence here
+
     cfg = ConfigParser.ConfigParser()
     cfg.read(cf)
-    # TODO
+
     assert 'global' in cfg.sections()
     confd = {}
     cfg_init_env(cfg, confd)
@@ -176,6 +181,129 @@ def cfg_parser(cf):
         cfg_init_individual(cfg, confd, sec)
     populate_conf(confd)
     return confd
+
+
+def cfg_parse_env(cfg):
+    ret = {}
+    if 'env' not in cfg.sections():
+        return ret
+
+    for (opt, val) in cfg.items('env'):
+        if opt in ENV_OPTIONS:
+            ret[opt] = val
+        else:
+            print('WARN: {0} is not avaliable as a ' +
+                    '<env> option - dropped'.format(opt))
+    return ret
+
+
+def cfg_parse_global(cfg):
+    ret = {}
+    if 'global' not in cfg.sections():
+        return ret
+
+    for (opt, val) in cfg.items('global'):
+        if opt in GLOBAL_OPTIONS:
+            ret[opt] = val
+        else:
+            print('WARN: {0} is not avaliable as a ' +
+                  '<global> option - dropped'.format(opt))
+    return ret
+
+def cfg_parse_section(cfg, section):
+    ret = {}
+    ret.update(DEFAULT_VALUES)
+
+    for (opt, val) in cfg.items(section):
+        if opt in ret:
+            ret[opt] = val
+        else:
+            print('WARN: {0} is not avaliable as a ' +
+                  '<global> option - dropped'.format(opt))
+    return ret
+
+
+def cfg_parser2(cf):
+    """
+    parsing the config file
+    @param {string} cf - the config file to parse
+    """
+    conf = {}
+    used_ports = {}
+    used_images = {}
+    if not os.path.isfile(cf):
+        print('ERROR: config file {0} not found'.format(cf))
+        sys.exit(-1)
+
+    cfg = ConfigParser.ConfigParser()
+    cfg.read(cf)
+    conf['env'] = cfg_parse_env(cfg)
+    conf['global'] = cfg_parse_global(cfg)
+
+    vm_nb = conf['env'].get('vm_nb', None)
+    if vm_nb: vm_nb = int(vm_nb)
+
+    # individual vm configuration
+    i = 0
+    j = 0 # store vm number
+    base_port = conf['global'].get('base_vnc_port', '')
+    for sec in cfg.sections():
+        if sec in ['env', 'global']: continue
+        if vm_nb:
+            if j < vm_nb:
+                j += 1
+            else:
+                print('WARN: vm_nb in <env> is {0}, vm <{1}> will not run\n'
+                    .format(vm_nb, sec))
+                break
+
+        iconf = cfg_parse_section(cfg, sec)
+
+        # resolve vnc_port and check
+        port = iconf['vnc_port']
+        if not port:
+            if base_port:
+                try:
+                    port = str(int(base_port) + i)
+                    i += 1
+                except(e):
+                    print('ERROR: base_vnc_port is not a number')
+                    sys.exit(1)
+            else:
+                print('ERROR: vnc_port for {0} not defined'.format(sec))
+                print('ERROR: base_vnc_port is also not avaliable in global confg')
+                sys.exit(1)
+        if port in used_ports:
+            print('ERROR: vnc_port {0} already used by {1}'
+                  .format(port, used_ports[port]))
+            print(conf[used_ports[port]])
+            sys.exit(1)
+
+        used_ports[port] = sec
+        iconf['vnc_port'] = port
+
+        # image check
+        # two running instances can't use a same image
+        image = iconf['image']
+        if not image:
+            print('ERROR: image for {0} no specifyied'.format(sec))
+            sys.exit(1)
+        if image in used_images:
+            print('ERROR: image {0} already used by {1}'
+                  .format(image, used_images[image]))
+            print(conf[used_images[image]])
+            sys.exit(1)
+        used_images[image] = sec
+
+        nic_nb = int(iconf['nic_nb'])
+        iconf['nic'] = []
+        for i in range(nic_nb):
+            nic = gen_virtio_dev(image, i)
+            iconf['nic'].append(nic)
+
+        conf[sec] = iconf
+
+    return conf
 
 
 class QemuArgs(object):
@@ -198,7 +326,8 @@ class QemuArgs(object):
             qemu_cmd += ' -nographic'
         qemu_cmd += ' -m ' + conf['memory'] + ' -cpu ' + conf['cpu'] + \
                     ' -smp ' + conf['smp'] + ' -hda ' +  conf['image'] + \
-                    ' ' + ' '.join(conf['nic']) + ' -vnc :' + conf['vnc_port']
+                    ' ' + ' '.join(conf['nic']) + ' -vnc :' + \
+                    conf['vnc_port'] + ' ' + conf['extra']
         _ = spre.split(qemu_cmd)
         beautiful_cmd = ' \\\n'.join(_)
         return qemu_cmd, beautiful_cmd
@@ -242,7 +371,7 @@ def parse_arguments():
     return vars(parser.parse_args())
 
 def test(args):
-    cfgs = cfg_parser(args['config_file'])
+    cfgs = cfg_parser2(args['config_file'])
     for cfg in cfgs:
         if cfg in ('env', 'global'): continue
         vm = VM(cfg, cfgs[cfg])
