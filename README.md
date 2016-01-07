@@ -2,7 +2,7 @@
 
 `pemu` is a QEMU/KVM command line wrapper
 
-Note: this tool is not intend to replace those powerful tool like libvirt or virtual manager. This tool will be handy only if you use bare QEUMU cli a lot.
+**Note**: this tool is not intend to replace those powerful tools like libvirt or virtual manager. This tool will be handy only if you use bare QEUMU cli a lot.
 
 ### Usage
 
