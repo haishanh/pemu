@@ -258,8 +258,11 @@ def parse_arguments():
     Parse sys.argv, return as a dict
     """
     parser = argparse.ArgumentParser(description="Qemu wrapper")
-    parser.add_argument('-d', '--dry-run', dest='dry_run', action='store_true', default = False, help='Dry run')
-    parser.add_argument('-f', '--config-file', dest='config_file', default='vm.ini', help='Specify config file')
+    parser.add_argument('-d', '--dry-run', dest='dry_run',
+                        action='store_true', default = False, help='Dry run')
+    parser.add_argument('-f', '--config-file', dest='config_file',
+                        default='vm.ini',
+                        help='Specify config file(use ./vm.ini by  defualt)')
     return vars(parser.parse_args())
 
 def main(args):
